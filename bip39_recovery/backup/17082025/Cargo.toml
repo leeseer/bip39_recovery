@@ -1,0 +1,12 @@
+[package]
+name = "bip39_bruteforce"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitcoin = "=0.27.1"
+bip39 = "=2.2.0"
+secp256k1 = "=0.20.3"
+clap = { version = "4.5.45", features = ["derive"] }
+rayon = "1.11.0"
+indicatif = "0.17.11"

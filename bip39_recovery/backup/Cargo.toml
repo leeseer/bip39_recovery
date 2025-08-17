@@ -1,0 +1,15 @@
+[package]
+name = "bip39_recovery"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.10"
+ripemd = "0.1"
+base58 = "0.2"
+secp256k1 = { version = "0.27", features = ["rand-std"] }
+hmac = "0.12"
+rayon = "1.7"
+thiserror = "1.0"
+indicatif = "0.17"  # For progress bars
+ctrlc = "3.4"       # For Ctrl-C handling

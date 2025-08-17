@@ -1,0 +1,16 @@
+[package]
+name = "bip39_recovery"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+cuda = []
+
+[dependencies]
+bitcoin = "0.30"
+bip39 = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17"
+rayon = "1.10"
+anyhow = "1.0"
+cuda = { version = "0.4.0-pre.2", features = ["cuda_10_0"] }
