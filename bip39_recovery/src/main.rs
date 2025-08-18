@@ -1,17 +1,21 @@
 use std::fs;
 use std::io::{self, BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use bitcoin::{Address, Network};
-use bitcoin::bip32::{DerivationPath, ExtendedPrivKey};
+use bitcoin::bip32::{DerivationPath, Xpriv};
 use bip39::{Language, Mnemonic};
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use anyhow::Result;
+use rayon::prelude::*;
+use num_cpus;
+use patricia_tree::PatriciaMap;
+use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::process;
 
 #[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(long, conflicts_with = "address_file")]
@@ -35,11 +39,31 @@ struct Args {
     #[arg(long, default_value = "m/44'/0'/0'/0/0")]
     path: String,
 
-    #[arg(long, default_value = "1000")]
+    #[arg(long, default_value = "5000")]
     batch_size: usize,
 
     #[arg(long)]
     gpu: bool,
+}
+
+struct Bip39Wordlist {
+   wordlist: PatriciaMap<()>,
+}
+impl Bip39Wordlist {
+    fn new(wordlist_path: &str) -> Result<Self> {
+        let file = fs::File::open(wordlist_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open wordlist file: {}", e))?;
+        let reader = BufReader::new(file);
+        let mut wordlist = PatriciaMap::new();
+        for line in reader.lines() {
+            let line = line.map_err(|e| anyhow::anyhow!("Failed to read wordlist file: {}", e))?;
+            wordlist.insert(line.trim(), ());
+        }
+        Ok(Self { wordlist })
+    }
+   fn contains(&self, word: &str) -> bool {
+       self.wordlist.contains_key(word)
+   }
 }
 
 fn try_mnemonic(
@@ -48,47 +72,49 @@ fn try_mnemonic(
     derivation_path: &DerivationPath,
     target_address: &str,
     secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
-) -> bool {
-    // Convert words to a single string more efficiently
-    let mut mnemonic_str = String::with_capacity(mnemonic_words.len() * 8); // Estimate capacity
-    for (i, word) in mnemonic_words.iter().enumerate() {
-        if i > 0 {
-            mnemonic_str.push(' ');
+    bip39_wordlist: &Bip39Wordlist,
+) -> Option<String> {
+    // Early validation: Check if all words are valid BIP39 words
+    // This can quickly reject invalid combinations
+    for word in mnemonic_words {
+        if !bip39_wordlist.contains(word) {
+            return None;
         }
-        mnemonic_str.push_str(word);
     }
+
+    // Convert words to a single string
+    let mnemonic_str = mnemonic_words.join(" ");
 
     let mnemonic = match Mnemonic::parse_in_normalized(Language::English, &mnemonic_str) {
         Ok(m) => m,
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     let seed = mnemonic.to_seed("");
-    let xprv = match ExtendedPrivKey::new_master(network, &seed) {
+    let xprv = match Xpriv::new_master(network, &seed) {
         Ok(k) => k,
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     let mut child_xprv = xprv;
     for index in derivation_path.into_iter() {
-        child_xprv = match child_xprv.derive_priv(secp, &[*index]) {
+        child_xprv = match child_xprv.derive_priv(secp, index) {
             Ok(c) => c,
-            Err(_) => return false,
+            Err(_) => return None,
         };
     }
 
     let pubkey = bitcoin::PublicKey::new(child_xprv.private_key.public_key(secp));
     let addr_p2wpkh = match Address::p2wpkh(&pubkey, network) {
         Ok(addr) => addr,
-        Err(_) => return false,
+        Err(_) => return None,
     };
 
     let addr_str = addr_p2wpkh.to_string();
     if addr_str == target_address {
-        println!("Match found! Mnemonic: {}", mnemonic_str);
-        true
+        Some(mnemonic_str)
     } else {
-        false
+        None
     }
 }
 
@@ -102,7 +128,9 @@ fn generate_permutations_batch(fixed: &[String], scramble: &[String], batch_size
             return;
         }
         if k == 1 {
-            let mut full = fixed.to_vec();
+            // Pre-allocate the vector with the correct size
+            let mut full = Vec::with_capacity(fixed.len() + a.len());
+            full.extend_from_slice(fixed);
             full.extend_from_slice(a);
             result.push(full);
             *count += 1;
@@ -132,7 +160,9 @@ fn try_mnemonic_gpu(
     network: Network,
     derivation_path: &DerivationPath,
     target_address: &str,
-) -> bool {
+    secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+    bip39_wordlist: &Bip39Wordlist,
+) -> Option<String> {
     // This is a placeholder for GPU implementation
     // In a full implementation, this would:
     // 1. Convert mnemonic words to indices
@@ -142,8 +172,7 @@ fn try_mnemonic_gpu(
     // 5. Return verification result
     
     // For now, we'll fall back to CPU verification
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    try_mnemonic(mnemonic_words, network, derivation_path, target_address, &secp)
+    try_mnemonic(mnemonic_words, network, derivation_path, target_address, secp, bip39_wordlist)
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -152,14 +181,21 @@ fn try_mnemonic_gpu(
     network: Network,
     derivation_path: &DerivationPath,
     target_address: &str,
-) -> bool {
+    secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+    bip39_wordlist: &Bip39Wordlist,
+) -> Option<String> {
     // Fallback to CPU verification when CUDA is not available
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    try_mnemonic(mnemonic_words, network, derivation_path, target_address, &secp)
+    try_mnemonic(mnemonic_words, network, derivation_path, target_address, secp, bip39_wordlist)
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Set the number of threads for Rayon
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus::get())
+        .build_global()
+        .map_err(|e| anyhow::anyhow!("Failed to build global thread pool: {}", e))?;
 
     // Read target address from file or command line
     let target_address = if let Some(address_file) = &args.address_file {
@@ -186,7 +222,7 @@ fn main() -> Result<()> {
             .filter(|s| !s.is_empty())
             .collect()
     } else {
-        args.known_words.clone()
+        args.known_words
     };
 
     let network = Network::Bitcoin;
@@ -214,10 +250,20 @@ fn main() -> Result<()> {
     let found = Arc::new(AtomicBool::new(false));
     let processed = Arc::new(AtomicUsize::new(0));
     let start = Instant::now();
+    let previous_speed: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
     
     // Create a shared secp context for all threads
     let secp = bitcoin::secp256k1::Secp256k1::new();
     let secp = Arc::new(secp);
+
+    // Load the BIP39 wordlist
+    let bip39_wordlist = match Bip39Wordlist::new("bip39_wordlist.txt") {
+        Ok(wordlist) => Arc::new(RwLock::new(wordlist)),
+        Err(e) => {
+            eprintln!("Failed to load BIP39 wordlist: {}", e);
+            return Err(e);
+        }
+    };
     
     // Calculate total permutations (factorial of scramble_words length)
     // We need to be careful with large numbers, so we'll use u64 and check for overflow
@@ -254,19 +300,26 @@ fn main() -> Result<()> {
             break;
         }
 
+        let previous_speed_clone = previous_speed.clone();
         permutations.par_iter().for_each_with(
-            (pb.clone(), found.clone(), processed.clone(), secp.clone()),
-            |(pb, found, processed, secp), mnemonic_words| {
+            (pb.clone(), found.clone(), processed.clone(), secp.clone(), bip39_wordlist.clone(), previous_speed_clone),
+            |(pb, found, processed, secp, bip39_wordlist, previous_speed), mnemonic_words| {
                 if found.load(Ordering::Relaxed) {
                     return;
                 }
-                let success = if args.gpu {
-                    try_mnemonic_gpu(mnemonic_words, network, &derivation_path, &target_address)
+                let mnemonic_option = if args.gpu {
+                    try_mnemonic_gpu(mnemonic_words, network, &derivation_path, &target_address, &secp, &bip39_wordlist.read().unwrap())
                 } else {
-                    try_mnemonic(mnemonic_words, network, &derivation_path, &target_address, &secp)
+                    let bip39_wordlist_lock = bip39_wordlist.read().unwrap();
+                    try_mnemonic(mnemonic_words, network, &derivation_path, &target_address, &secp, &bip39_wordlist_lock)
                 };
-                if success {
+                if let Some(mnemonic_str) = mnemonic_option {
+                    if let Ok(pb) = pb.lock() {
+                        pb.finish_with_message("Found match!");
+                    }
+                    println!("Match found! Mnemonic: {}", mnemonic_str);
                     found.store(true, Ordering::Relaxed);
+                    process::exit(0);
                 }
                 let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Ok(pb) = pb.lock() {
@@ -275,11 +328,19 @@ fn main() -> Result<()> {
                     // Update message with remaining permutations and ETA
                     let remaining = total_permutations.saturating_sub(count as u64);
                     let elapsed = start.elapsed().as_secs_f64();
-                    let speed = if elapsed > 0.0 {
+                    let current_speed = if elapsed > 0.0 {
                         count as f64 / elapsed
                     } else {
                         0.0
                     };
+                    let mut previous_speed_lock = previous_speed.lock().unwrap();
+                    let speed = if *previous_speed_lock > 0.0 {
+                        0.9 * *previous_speed_lock + 0.1 * current_speed
+                    } else {
+                        current_speed
+                    };
+                    *previous_speed_lock = speed;
+
                     let eta_seconds = if speed > 0.0 {
                         (remaining as f64 / speed) as u64
                     } else {
