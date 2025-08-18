@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use bitcoin::{Address, Network};
 use bitcoin::bip32::{DerivationPath, Xpriv};
@@ -14,6 +14,8 @@ use std::time::Instant;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::process;
 use std::collections::HashSet;
+use log::{info, error, debug};
+use simplelog::{CombinedLogger, TermLogger, WriteLogger, Config, LevelFilter};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -56,6 +58,9 @@ struct Args {
 
     #[arg(long)]
     debug: bool,
+
+    #[arg(long, default_value = "recovery.log")]
+    log_file: String,
 }
 
 struct Bip39Wordlist {
@@ -92,7 +97,7 @@ fn try_mnemonic(
     for word in mnemonic_words {
         if !bip39_wordlist.contains(word) {
             if debug {
-                eprintln!("Invalid BIP-39 word: {}", word);
+                error!("Invalid BIP-39 word: {}", word);
             }
             return None;
         }
@@ -113,7 +118,7 @@ fn try_mnemonic(
         Ok(k) => k,
         Err(e) => {
             if debug {
-                eprintln!("Failed to derive master key for {}: {}", mnemonic_str, e);
+                error!("Failed to derive master key for {}: {}", mnemonic_str, e);
             }
             return None;
         }
@@ -125,7 +130,7 @@ fn try_mnemonic(
             Ok(c) => c,
             Err(e) => {
                 if debug {
-                    eprintln!("Failed to derive child key for {} at {}: {}", mnemonic_str, index, e);
+                    error!("Failed to derive child key for {} at {}: {}", mnemonic_str, index, e);
                 }
                 return None;
             }
@@ -139,7 +144,7 @@ fn try_mnemonic(
         "p2sh-p2wpkh" => Address::p2shwpkh(&pubkey, network),
         _ => {
             if debug {
-                eprintln!("Unsupported address type: {}", address_type);
+                error!("Unsupported address type: {}", address_type);
             }
             return None;
         }
@@ -148,7 +153,7 @@ fn try_mnemonic(
         Ok(addr) => addr,
         Err(e) => {
             if debug {
-                eprintln!("Failed to create address for {}: {}", mnemonic_str, e);
+                error!("Failed to create address for {}: {}", mnemonic_str, e);
             }
             return None;
         }
@@ -156,7 +161,7 @@ fn try_mnemonic(
 
     let addr_str = addr.to_string();
     if debug {
-        println!("Derived address for {}: {}", mnemonic_str, addr_str);
+        debug!("Derived address for {}: {}", mnemonic_str, addr_str);
     }
 
     let is_match = match (target_address, address_db) {
@@ -238,6 +243,26 @@ fn try_mnemonic_gpu(
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Initialize logger
+    CombinedLogger::init(vec![
+        TermLogger::new(
+            if args.debug { LevelFilter::Debug } else { LevelFilter::Info },
+            Config::default(),
+            simplelog::TerminalMode::Mixed,
+            simplelog::ColorChoice::Auto,
+        ),
+        WriteLogger::new(
+            LevelFilter::Debug,
+            Config::default(),
+            File::create(&args.log_file)
+                .map_err(|e| anyhow::anyhow!("Failed to create log file {}: {}", args.log_file, e))?,
+        ),
+    ])
+    .map_err(|e| anyhow::anyhow!("Failed to initialize logger: {}", e))?;
+
+    info!("Program started");
+    info!("Command-line arguments: {:?}", args);
+
     let total_permutations = {
         let n = args.total_words;
         let mut result: u64 = 1;
@@ -249,49 +274,68 @@ fn main() -> Result<()> {
 
     let use_parallel = total_permutations >= 1000;
     let num_threads = if use_parallel { num_cpus::get_physical() } else { 1 };
-    println!("Using {} threads for {} permutations", num_threads, total_permutations);
+    info!("Using {} threads for {} permutations", num_threads, total_permutations);
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build_global()
-        .map_err(|e| anyhow::anyhow!("Failed to build global thread pool: {}", e))?;
+        .map_err(|e| {
+            error!("Failed to build global thread pool: {}", e);
+            anyhow::anyhow!("Failed to build global thread pool: {}", e)
+        })?;
 
     let (target_address, address_db) = match (&args.address, &args.address_file, &args.address_db_file) {
         (Some(addr), None, None) => (Some(addr.as_str()), None),
         (None, Some(file), None) => {
             let addr = fs::read_to_string(file)
-                .map_err(|e| anyhow::anyhow!("Failed to read address file: {}", e))?
+                .map_err(|e| {
+                    error!("Failed to read address file {}: {}", file, e);
+                    anyhow::anyhow!("Failed to read address file: {}", e)
+                })?
                 .trim()
                 .to_string();
             (Some(&*Box::leak(addr.into_boxed_str())), None)
         }
         (None, None, Some(db_file)) => {
             let file = fs::File::open(db_file)
-                .map_err(|e| anyhow::anyhow!("Failed to open address database file: {}", e))?;
+                .map_err(|e| {
+                    error!("Failed to open address database file {}: {}", db_file, e);
+                    anyhow::anyhow!("Failed to open address database file: {}", e)
+                })?;
             let reader = BufReader::new(file);
             let db: HashSet<String> = reader
                 .lines()
-                .map(|line| line.map_err(|e| anyhow::anyhow!("Failed to read address database: {}", e)))
+                .map(|line| line.map_err(|e| {
+                    error!("Failed to read address database: {}", e);
+                    anyhow::anyhow!("Failed to read address database: {}", e)
+                }))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            println!("Loaded {} addresses from database", db.len());
+            info!("Loaded {} addresses from database", db.len());
             (None, Some(db))
         }
         _ => {
+            error!("Must specify exactly one of --address, --address-file, or --address-db-file");
             return Err(anyhow::anyhow!("Must specify exactly one of --address, --address-file, or --address-db-file"));
         }
     };
 
     let known_words = if let Some(seed_words_file) = &args.seed_words_file {
         let file = fs::File::open(seed_words_file)
-            .map_err(|e| anyhow::anyhow!("Failed to open seed words file: {}", e))?;
+            .map_err(|e| {
+                error!("Failed to open seed words file {}: {}", seed_words_file, e);
+                anyhow::anyhow!("Failed to open seed words file: {}", e)
+            })?;
         let reader = BufReader::new(file);
         reader.lines()
             .collect::<Result<Vec<String>, io::Error>>()
-            .map_err(|e| anyhow::anyhow!("Failed to read seed words file: {}", e))?
+            .map_err(|e| {
+                error!("Failed to read seed words file: {}", e);
+                anyhow::anyhow!("Failed to read seed words file: {}", e)
+            })?
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -304,19 +348,19 @@ fn main() -> Result<()> {
         "mainnet" => Network::Bitcoin,
         "testnet" => Network::Testnet,
         _ => {
-            eprintln!("Invalid network: {}. Use 'mainnet' or 'testnet'.", args.network);
+            error!("Invalid network: {}. Use 'mainnet' or 'testnet'.", args.network);
             return Err(anyhow::anyhow!("Invalid network"));
         }
     };
 
     let derivation_path = args.path.parse::<DerivationPath>().map_err(|e| {
-        eprintln!("Invalid derivation path: {}", e);
+        error!("Invalid derivation path: {}", e);
         anyhow::anyhow!("Invalid derivation path: {}", e)
     })?;
 
     if known_words.len() != args.total_words {
-        eprintln!(
-            "Error: Expected {} words, got {}",
+        error!(
+            "Expected {} words, got {}",
             args.total_words,
             known_words.len()
         );
@@ -324,19 +368,19 @@ fn main() -> Result<()> {
     }
 
     if args.fixed_words > args.total_words {
-        eprintln!("Error: Fixed words ({}) must not exceed total words ({})", args.fixed_words, args.total_words);
+        error!("Fixed words ({}) must not exceed total words ({})", args.fixed_words, args.total_words);
         return Err(anyhow::anyhow!("Invalid fixed words count"));
     }
 
-    println!("Provided words ({}): {:?}", known_words.len(), known_words);
+    info!("Provided words ({}): {:?}", known_words.len(), known_words);
     if let Some(target) = target_address {
-        println!("Target address: {}", target);
+        info!("Target address: {}", target);
     } else {
-        println!("Checking against address database");
+        info!("Checking against address database");
     }
-    println!("Derivation path: {}", args.path);
-    println!("Network: {}", args.network);
-    println!("Address type: {}", args.address_type);
+    info!("Derivation path: {}", args.path);
+    info!("Network: {}", args.network);
+    info!("Address type: {}", args.address_type);
 
     let found = Arc::new(AtomicBool::new(false));
     let processed = Arc::new(AtomicUsize::new(0));
@@ -349,12 +393,12 @@ fn main() -> Result<()> {
     let bip39_wordlist = match Bip39Wordlist::new("bip39_wordlist.txt") {
         Ok(wordlist) => Arc::new(RwLock::new(wordlist)),
         Err(e) => {
-            eprintln!("Failed to load BIP39 wordlist: {}", e);
+            error!("Failed to load BIP39 wordlist: {}", e);
             return Err(e);
         }
     };
 
-    println!("Total permutations to check: {}", total_permutations);
+    info!("Total permutations to check: {}", total_permutations);
 
     let batch_size = if total_permutations < args.batch_size as u64 {
         total_permutations as usize
@@ -432,7 +476,7 @@ fn main() -> Result<()> {
                         if let Ok(pb) = pb.lock() {
                             pb.finish_with_message("Found match!");
                         }
-                        println!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
+                        info!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
                         found.store(true, Ordering::Relaxed);
                         process::exit(0);
                     }
@@ -491,7 +535,7 @@ fn main() -> Result<()> {
                 if let Some((mnemonic_str, matched_address)) = mnemonic_option {
                     if let Ok(pb) = pb.lock() {
                         pb.finish_with_message("Found match!");
-                        println!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
+                        info!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
                     }
                     found.store(true, Ordering::Relaxed);
                     process::exit(0);
@@ -511,16 +555,16 @@ fn main() -> Result<()> {
         "Done! Processed {} permutations in {:.2} seconds, Found: {}",
         processed_count, elapsed, found.load(Ordering::Relaxed)
     );
-    println!("{}", final_message);
+    info!("{}", final_message);
 
     if !found.load(Ordering::Relaxed) {
-        println!("No matching mnemonic found.");
+        info!("No matching mnemonic found.");
     } else {
-        println!("Search completed successfully.");
+        info!("Search completed successfully.");
     }
 
     if elapsed > 0.0 {
-        println!("Speed: {:.2} hashes/sec", processed_count as f64 / elapsed);
+        info!("Speed: {:.2} hashes/sec", processed_count as f64 / elapsed);
     }
 
     Ok(())
