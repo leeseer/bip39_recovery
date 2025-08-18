@@ -15,50 +15,37 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::process;
 use std::collections::HashSet;
 use log::{info, error, debug};
-use simplelog::{CombinedLogger, TermLogger, WriteLogger, Config, LevelFilter};
+use simplelog::{CombinedLogger, TermLogger, WriteLogger, LevelFilter, Config};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(long, conflicts_with_all = ["address_file", "address_db_file"])]
     address: Option<String>,
-
     #[arg(long, conflicts_with_all = ["address", "address_db_file"])]
     address_file: Option<String>,
-
     #[arg(long, conflicts_with_all = ["address", "address_file"])]
     address_db_file: Option<String>,
-
     #[arg(long)]
     total_words: usize,
-
     #[arg(long)]
     fixed_words: usize,
-
     #[arg(long, value_delimiter = ',', conflicts_with = "seed_words_file")]
     known_words: Vec<String>,
-
     #[arg(long)]
     seed_words_file: Option<String>,
-
     #[arg(long, default_value = "m/44'/0'/0'/0/0")]
     path: String,
-
     #[arg(long, default_value = "5000")]
     batch_size: usize,
-
     #[arg(long)]
     gpu: bool,
-
     #[arg(long, default_value = "mainnet")]
     network: String,
-
     #[arg(long, default_value = "p2wpkh")]
     address_type: String,
-
     #[arg(long)]
     debug: bool,
-
     #[arg(long, default_value = "recovery.log")]
     log_file: String,
 }
@@ -66,6 +53,7 @@ struct Args {
 struct Bip39Wordlist {
     wordlist: PatriciaMap<()>,
 }
+
 impl Bip39Wordlist {
     fn new(wordlist_path: &str) -> Result<Self> {
         let file = fs::File::open(wordlist_path)
@@ -93,13 +81,13 @@ fn try_mnemonic(
     bip39_wordlist: &Bip39Wordlist,
     address_type: &str,
     debug: bool,
-) -> Option<(String, String)> {
+) -> Result<Option<(String, String)>> {
     for word in mnemonic_words {
         if !bip39_wordlist.contains(word) {
             if debug {
                 error!("Invalid BIP-39 word: {}", word);
             }
-            return None;
+            return Ok(None);
         }
     }
 
@@ -107,35 +95,30 @@ fn try_mnemonic(
 
     let mnemonic = match Mnemonic::parse_in_normalized(Language::English, &mnemonic_str) {
         Ok(m) => m,
-        Err(_) => {
-            // Suppress "Invalid mnemonic" output
-            return None;
+        Err(e) => {
+            if debug {
+                error!("Mnemonic validation failed for '{}': {}", mnemonic_str, e);
+            }
+            return Ok(None);
         }
     };
 
     let seed = mnemonic.to_seed("");
-    let xprv = match Xpriv::new_master(network, &seed) {
-        Ok(k) => k,
-        Err(e) => {
+    let xprv = Xpriv::new_master(network, &seed)
+        .map_err(|e| {
             if debug {
                 error!("Failed to derive master key for {}: {}", mnemonic_str, e);
             }
-            return None;
-        }
-    };
+            anyhow::anyhow!("Failed to derive master key: {}", e)
+        })?;
 
-    let mut child_xprv = xprv;
-    for index in derivation_path.into_iter() {
-        child_xprv = match child_xprv.derive_priv(secp, index) {
-            Ok(c) => c,
-            Err(e) => {
-                if debug {
-                    error!("Failed to derive child key for {} at {}: {}", mnemonic_str, index, e);
-                }
-                return None;
+    let child_xprv = xprv.derive_priv(secp, derivation_path)
+        .map_err(|e| {
+            if debug {
+                error!("Failed to derive child key for {} at {}: {}", mnemonic_str, derivation_path, e);
             }
-        };
-    }
+            anyhow::anyhow!("Failed to derive child key: {}", e)
+        })?;
 
     let pubkey = bitcoin::PublicKey::new(child_xprv.private_key.public_key(secp));
     let addr = match address_type.to_lowercase().as_str() {
@@ -146,22 +129,19 @@ fn try_mnemonic(
             if debug {
                 error!("Unsupported address type: {}", address_type);
             }
-            return None;
+            return Ok(None);
         }
     };
-    let addr = match addr {
-        Ok(addr) => addr,
-        Err(e) => {
-            if debug {
-                error!("Failed to create address for {}: {}", mnemonic_str, e);
-            }
-            return None;
+    let addr = addr.map_err(|e| {
+        if debug {
+            error!("Failed to create address for {}: {}", mnemonic_str, e);
         }
-    };
+        anyhow::anyhow!("Failed to create address: {}", e)
+    })?;
 
     let addr_str = addr.to_string();
     if debug {
-        debug!("Derived address for {}: {}", mnemonic_str, addr_str);
+        debug!("Derived address for '{}': {}", mnemonic_str, addr_str);
     }
 
     let is_match = match (target_address, address_db) {
@@ -171,34 +151,44 @@ fn try_mnemonic(
     };
 
     if is_match {
-        Some((mnemonic_str, addr_str))
+        Ok(Some((mnemonic_str, addr_str)))
     } else {
-        None
+        Ok(None)
     }
 }
 
-fn generate_permutations_batch(words: &[String], batch_size: usize, processed: usize, total: u64) -> Vec<Vec<String>> {
+fn generate_permutations_batch(
+    words: &[String],
+    fixed_words: usize,
+    batch_size: usize,
+    processed: usize,
+    total: u64,
+    debug: bool,
+) -> Vec<Vec<String>> {
     let max_batch_size = batch_size.min((total.saturating_sub(processed as u64)) as usize);
     let mut result = Vec::with_capacity(max_batch_size);
-    let mut current = words.to_vec();
+    let fixed = words[..fixed_words].to_vec();
+    let mut permutable = words[fixed_words..].to_vec();
     let mut count = 0;
 
-    fn generate(k: usize, a: &mut [String], result: &mut Vec<Vec<String>>, batch_size: usize, count: &mut usize) {
+    fn generate(k: usize, a: &mut [String], result: &mut Vec<Vec<String>>, batch_size: usize, count: &mut usize, fixed: &[String]) {
         if *count >= batch_size {
             return;
         }
         if k == 1 {
-            result.push(a.to_vec());
+            let mut full_permutation = fixed.to_vec();
+            full_permutation.extend_from_slice(a);
+            result.push(full_permutation);
             *count += 1;
         } else {
-            generate(k - 1, a, result, batch_size, count);
+            generate(k - 1, a, result, batch_size, count, fixed);
             for i in 0..k - 1 {
                 if k % 2 == 0 {
                     a.swap(i, k - 1);
                 } else {
                     a.swap(0, k - 1);
                 }
-                generate(k - 1, a, result, batch_size, count);
+                generate(k - 1, a, result, batch_size, count, fixed);
                 if *count >= batch_size {
                     break;
                 }
@@ -206,7 +196,15 @@ fn generate_permutations_batch(words: &[String], batch_size: usize, processed: u
         }
     }
 
-    generate(words.len(), &mut current, &mut result, max_batch_size, &mut count);
+    if debug {
+        debug!("Generating batch of up to {} permutations, processed: {}, total: {}", max_batch_size, processed, total);
+    }
+    generate(permutable.len(), &mut permutable, &mut result, max_batch_size, &mut count, &fixed);
+    if debug && !result.is_empty() {
+        debug!("Generated {} permutations in batch", result.len());
+        debug!("First mnemonic in batch: {}", result[0].join(" "));
+        debug!("Last mnemonic in batch: {}", result[result.len() - 1].join(" "));
+    }
     result
 }
 
@@ -221,8 +219,18 @@ fn try_mnemonic_gpu(
     bip39_wordlist: &Bip39Wordlist,
     address_type: &str,
     debug: bool,
-) -> Option<(String, String)> {
-    try_mnemonic(mnemonic_words, network, derivation_path, target_address, address_db, secp, bip39_wordlist, address_type, debug)
+) -> Result<Option<(String, String)>> {
+    try_mnemonic(
+        mnemonic_words,
+        network,
+        derivation_path,
+        target_address,
+        address_db,
+        secp,
+        bip39_wordlist,
+        address_type,
+        debug,
+    )
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -236,14 +244,24 @@ fn try_mnemonic_gpu(
     bip39_wordlist: &Bip39Wordlist,
     address_type: &str,
     debug: bool,
-) -> Option<(String, String)> {
-    try_mnemonic(mnemonic_words, network, derivation_path, target_address, address_db, secp, bip39_wordlist, address_type, debug)
+) -> Result<Option<(String, String)>> {
+    try_mnemonic(
+        mnemonic_words,
+        network,
+        derivation_path,
+        target_address,
+        address_db,
+        secp,
+        bip39_wordlist,
+        address_type,
+        debug,
+    )
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logger
+    // Initialize main logger (recovery.log)
     CombinedLogger::init(vec![
         TermLogger::new(
             if args.debug { LevelFilter::Debug } else { LevelFilter::Info },
@@ -264,7 +282,7 @@ fn main() -> Result<()> {
     info!("Command-line arguments: {:?}", args);
 
     let total_permutations = {
-        let n = args.total_words;
+        let n = args.total_words - args.fixed_words;
         let mut result: u64 = 1;
         for i in 1..=n {
             result = result.saturating_mul(i as u64);
@@ -330,7 +348,8 @@ fn main() -> Result<()> {
                 anyhow::anyhow!("Failed to open seed words file: {}", e)
             })?;
         let reader = BufReader::new(file);
-        reader.lines()
+        reader
+            .lines()
             .collect::<Result<Vec<String>, io::Error>>()
             .map_err(|e| {
                 error!("Failed to read seed words file: {}", e);
@@ -368,11 +387,17 @@ fn main() -> Result<()> {
     }
 
     if args.fixed_words > args.total_words {
-        error!("Fixed words ({}) must not exceed total words ({})", args.fixed_words, args.total_words);
+        error!(
+            "Fixed words ({}) must not exceed total words ({})",
+            args.fixed_words, args.total_words
+        );
         return Err(anyhow::anyhow!("Invalid fixed words count"));
     }
 
     info!("Provided words ({}): {:?}", known_words.len(), known_words);
+    if args.fixed_words > 0 {
+        info!("Fixed words ({}): {:?}", args.fixed_words, &known_words[..args.fixed_words]);
+    }
     if let Some(target) = target_address {
         info!("Target address: {}", target);
     } else {
@@ -381,13 +406,32 @@ fn main() -> Result<()> {
     info!("Derivation path: {}", args.path);
     info!("Network: {}", args.network);
     info!("Address type: {}", args.address_type);
+    info!("Fixed words count: {}", args.fixed_words);
+    info!("Total permutations to check: {}", total_permutations);
+
+    let batch_size = if total_permutations < args.batch_size as u64 {
+        total_permutations as usize
+    } else {
+        args.batch_size
+    };
+
+    // Verify total permutations generated
+    if args.debug {
+        let total_generated: usize = (0..total_permutations)
+            .step_by(batch_size)
+            .map(|start| generate_permutations_batch(&known_words, args.fixed_words, batch_size, start as usize, total_permutations, args.debug).len())
+            .sum();
+        debug!("Total permutations generated: {}, expected: {}", total_generated, total_permutations);
+        if total_generated as u64 != total_permutations {
+            error!("Permutation generation mismatch: generated {}, expected {}", total_generated, total_permutations);
+        }
+    }
 
     let found = Arc::new(AtomicBool::new(false));
     let processed = Arc::new(AtomicUsize::new(0));
     let start = Instant::now();
     let previous_speed: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
     let address_db = Arc::new(address_db);
-
     let secp = Arc::new(bitcoin::secp256k1::Secp256k1::new());
 
     let bip39_wordlist = match Bip39Wordlist::new("bip39_wordlist.txt") {
@@ -396,14 +440,6 @@ fn main() -> Result<()> {
             error!("Failed to load BIP39 wordlist: {}", e);
             return Err(e);
         }
-    };
-
-    info!("Total permutations to check: {}", total_permutations);
-
-    let batch_size = if total_permutations < args.batch_size as u64 {
-        total_permutations as usize
-    } else {
-        args.batch_size
     };
 
     let pb = ProgressBar::new(total_permutations);
@@ -429,9 +465,11 @@ fn main() -> Result<()> {
 
             let permutations = generate_permutations_batch(
                 &known_words,
+                args.fixed_words,
                 batch_size,
                 current_processed,
                 total_permutations,
+                args.debug,
             );
             if permutations.is_empty() {
                 if let Ok(pb) = pb.lock() {
@@ -442,13 +480,21 @@ fn main() -> Result<()> {
 
             let previous_speed_clone = previous_speed.clone();
             permutations.par_iter().for_each_with(
-                (pb.clone(), found.clone(), processed.clone(), secp.clone(), bip39_wordlist.clone(), address_db.clone(), previous_speed_clone),
+                (
+                    pb.clone(),
+                    found.clone(),
+                    processed.clone(),
+                    secp.clone(),
+                    bip39_wordlist.clone(),
+                    address_db.clone(),
+                    previous_speed_clone,
+                ),
                 |(pb, found, processed, secp, bip39_wordlist, address_db, previous_speed), mnemonic_words| {
                     if found.load(Ordering::Relaxed) {
                         return;
                     }
                     let mnemonic_option = if args.gpu {
-                        try_mnemonic_gpu(
+                        match try_mnemonic_gpu(
                             mnemonic_words,
                             network,
                             &derivation_path,
@@ -458,9 +504,17 @@ fn main() -> Result<()> {
                             &bip39_wordlist.read().unwrap(),
                             &args.address_type,
                             args.debug,
-                        )
+                        ) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                if args.debug {
+                                    error!("GPU mnemonic try failed: {}", e);
+                                }
+                                return;
+                            }
+                        }
                     } else {
-                        try_mnemonic(
+                        match try_mnemonic(
                             mnemonic_words,
                             network,
                             &derivation_path,
@@ -470,7 +524,15 @@ fn main() -> Result<()> {
                             &bip39_wordlist.read().unwrap(),
                             &args.address_type,
                             args.debug,
-                        )
+                        ) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                if args.debug {
+                                    error!("Mnemonic try failed: {}", e);
+                                }
+                                return;
+                            }
+                        }
                     };
                     if let Some((mnemonic_str, matched_address)) = mnemonic_option {
                         if let Ok(pb) = pb.lock() {
@@ -483,7 +545,6 @@ fn main() -> Result<()> {
                     let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                     if let Ok(pb) = pb.lock() {
                         pb.set_position(count as u64);
-                        let _remaining = total_permutations.saturating_sub(count as u64);
                         let elapsed = start.elapsed().as_secs_f64();
                         let current_speed = if elapsed > 0.0 {
                             count as f64 / elapsed
@@ -506,9 +567,11 @@ fn main() -> Result<()> {
         while !found.load(Ordering::Relaxed) && current_processed < total_permutations as usize {
             let permutations = generate_permutations_batch(
                 &known_words,
+                args.fixed_words,
                 batch_size,
                 current_processed,
                 total_permutations,
+                args.debug,
             );
             if permutations.is_empty() {
                 if let Ok(pb) = pb.lock() {
@@ -521,7 +584,7 @@ fn main() -> Result<()> {
                 if found.load(Ordering::Relaxed) {
                     break;
                 }
-                let mnemonic_option = try_mnemonic(
+                let mnemonic_option = match try_mnemonic(
                     &mnemonic_words,
                     network,
                     &derivation_path,
@@ -531,7 +594,15 @@ fn main() -> Result<()> {
                     &bip39_wordlist.read().unwrap(),
                     &args.address_type,
                     args.debug,
-                );
+                ) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        if args.debug {
+                            error!("Mnemonic try failed: {}", e);
+                        }
+                        continue;
+                    }
+                };
                 if let Some((mnemonic_str, matched_address)) = mnemonic_option {
                     if let Ok(pb) = pb.lock() {
                         pb.finish_with_message("Found match!");

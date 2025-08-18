@@ -1,8 +1,0 @@
-cargo:rerun-if-changed=build.rs
-cargo:rerun-if-env-changed=CUDA_HOME
-cargo:rerun-if-env-changed=CUDA_PATH
-cargo:rerun-if-env-changed=CUDA_LIBRARY_PATH
-cargo:rustc-link-lib=cuda
-cargo:rustc-link-lib=cudart
-cargo:rustc-link-lib=curand
-cargo:rustc-link-lib=cublas

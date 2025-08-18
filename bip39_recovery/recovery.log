@@ -1,9 +1,12 @@
-09:23:48 [INFO] Program started
-09:23:48 [INFO] Command-line arguments: Args { address: Some("1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC"), address_file: None, address_db_file: None, total_words: 12, fixed_words: 0, known_words: [], seed_words_file: Some("words"), path: "m/44'/0'/0'/0/0", batch_size: 5000, gpu: false, network: "mainnet", address_type: "p2pkh", debug: false, log_file: "recovery.log" }
-09:23:48 [INFO] Using 6 threads for 479001600 permutations
-09:23:48 [INFO] Provided words (12): ["biology", "harvest", "bulk", "pave", "before", "enrich", "dish", "busy", "one", "correct", "chat", "mean"]
-09:23:48 [INFO] Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
-09:23:48 [INFO] Derivation path: m/44'/0'/0'/0/0
-09:23:48 [INFO] Network: mainnet
-09:23:48 [INFO] Address type: p2pkh
-09:23:48 [INFO] Total permutations to check: 479001600
+13:26:05 [INFO] Program started
+13:26:05 [INFO] Command-line arguments: Args { address: Some("1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC"), address_file: None, address_db_file: None, total_words: 12, fixed_words: 5, known_words: [], seed_words_file: Some("words"), path: "m/44'/0'/0'/0/0", batch_size: 5000, gpu: true, network: "mainnet", address_type: "p2pkh", debug: false, log_file: "recovery.log" }
+13:26:05 [INFO] Using 6 threads for 5040 permutations
+13:26:05 [INFO] Provided words (12): ["harvest", "bulk", "pave", "before", "enrich", "one", "dish", "busy", "mean", "biology", "correct", "chat"]
+13:26:05 [INFO] Fixed words (5): ["harvest", "bulk", "pave", "before", "enrich"]
+13:26:05 [INFO] Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+13:26:05 [INFO] Derivation path: m/44'/0'/0'/0/0
+13:26:05 [INFO] Network: mainnet
+13:26:05 [INFO] Address type: p2pkh
+13:26:05 [INFO] Fixed words count: 5
+13:26:05 [INFO] Total permutations to check: 5040
+13:26:05 [INFO] Match found! Mnemonic: harvest bulk pave before enrich dish busy one correct chat mean biology, Address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
