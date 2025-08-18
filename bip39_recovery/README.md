@@ -1,201 +1,263 @@
-# BIP39 Recovery Tool
+BIP-39 Mnemonic Recovery Tool
+This Rust program recovers a BIP-39 mnemonic by permuting a list of words and checking derived Bitcoin addresses against a target address or a database of addresses. It supports parallel processing, logging, and multiple address types (P2PKH, P2WPKH, P2SH-P2WPKH).
+Features
 
-A tool to recover BIP39 mnemonics by brute-forcing missing or unknown words in a mnemonic phrase.
+Permutes all provided words (e.g., 12! = 479,001,600 permutations for 12 words).
+Checks mnemonics against a single address (--address or --address-file) or an address database (--address-db-file).
+Logs all processes to a file (default: recovery.log).
+Suppresses "Invalid mnemonic" errors while logging invalid BIP-39 words and derivation errors (with --debug).
+Uses rayon for parallel processing across all CPU cores.
+Displays a progress bar with ETA and speed.
+Terminates immediately upon finding a match.
+Supports mainnet/testnet and customizable derivation paths.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/Rust-1.56%2B-orange.svg)](https://www.rust-lang.org/)
+Prerequisites
 
-## Features
+Rust and Cargo: Install via rustup:curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-- Recovers missing words in a BIP39 mnemonic phrase
-- Supports Bitcoin address verification
-- Parallel processing for faster recovery
-- GPU acceleration support (CUDA)
-- Progress tracking with ETA
-- File-based input for seed words and target address
-- Command-line interface with flexible options
 
-## Dependencies
+Linux/macOS: The installer script is designed for Unix-like systems. Windows users can use WSL or follow manual steps.
 
-- Rust 1.56 or later
-- Cargo (Rust package manager)
-- For GPU support: CUDA toolkit 10.0 or later
+Installation
 
-## Installation
-
-### Method 1: Using the installer script (Linux/macOS)
-
-```bash
-# Download and run the installer
-curl -O https://raw.githubusercontent.com/your-username/bip39_recovery/main/install.sh
+Run the Installer:
 chmod +x install.sh
 ./install.sh
-```
 
-### Method 2: Using Makefile
+The installer:
 
-```bash
-# Clone the repository
-git clone https://github.com/your-username/bip39_recovery.git
+Checks for Rust and cargo.
+Creates or updates the project directory (bip39_recovery).
+Sets up Cargo.toml with dependencies.
+Downloads the BIP-39 wordlist (bip39_wordlist.txt).
+Creates sample words and addresses.txt files.
+Builds the project with cargo build --release.
+
+
+Manual Setup (if preferred):
+
+Clone or create the project:mkdir bip39_recovery
 cd bip39_recovery
+cargo init --bin
 
-# Build the project
-make build
 
-# Install the binary
-sudo make install
-```
+Copy main.rs and Cargo.toml from the provided sources.
+Download the BIP-39 wordlist:curl -o bip39_wordlist.txt https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt
 
-### Method 3: Manual installation
 
-1. Install Rust and Cargo:
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   source $HOME/.cargo/env
-   ```
+Create a words file with 12 BIP-39 words (one per line).
+Install dependencies:cargo update
+cargo build --release
 
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/your-username/bip39_recovery.git
-   cd bip39_recovery
-   ```
 
-3. Build the project:
-   ```bash
-   # For CPU-only version
-   cargo build --release
-   
-   # For GPU-accelerated version
-   cargo build --release --features cuda
-   ```
 
-4. Install the binary:
-   ```bash
-   sudo cp target/release/bip39_recovery /usr/local/bin/
-   ```
 
-5. Verify the installation:
-   ```bash
-   ./verify_installation.sh
-   ```
 
-## Project Structure
+Usage
+Run the program with cargo run --release -- [options]. Example:
+cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug
 
-The project includes the following files:
+Command-Line Arguments
 
-- `src/main.rs` - Main source code
-- `Cargo.toml` - Project dependencies and metadata
-- `README.md` - This file
-- `LICENSE` - MIT License
-- `install.sh` - Automated installer script
-- `Makefile` - Build automation
-- `verify_installation.sh` - Installation verification script
-- `example_words.txt` - Example BIP39 wordlist
-- `example_address.txt` - Example target address
-- `example_usage.sh` - Example usage commands
 
-## Usage
 
-### Basic usage
+Argument
+Description
+Default
 
-```bash
-bip39_recovery --total-words <count> --fixed-words <count> --known-words <word1,word2,...> --address <target_address>
-```
 
-### Example files
 
-The project includes example files to help you get started:
+--address <ADDRESS>
+Single target Bitcoin address
+None
 
-- `example_words.txt` - Contains the complete BIP39 wordlist (2048 words)
-- `example_address.txt` - Contains an example Bitcoin address
-- `example_usage.sh` - Shows various example commands
 
-You can use these files as templates for your own inputs.
+--address-file <FILE>
+File containing a single address
+None
 
-### Options
 
-- `--address <ADDRESS>`: Target Bitcoin address to match
-- `--address-file <FILE>`: File containing the target Bitcoin address
-- `--total-words <COUNT>`: Total number of words in the mnemonic (12, 15, 18, 21, or 24)
-- `--fixed-words <COUNT>`: Number of known words at the beginning of the mnemonic
-- `--known-words <WORDS>`: Comma-separated list of known words
-- `--seed-words-file <FILE>`: File containing seed words (one per line)
-- `--path <PATH>`: Derivation path (default: "m/44'/0'/0'/0/0")
-- `--batch-size <SIZE>`: Batch size for processing (default: 1000)
-- `--gpu`: Enable GPU acceleration (requires CUDA)
+--address-db-file <FILE>
+File with multiple addresses (one per line)
+None
 
-### Examples
 
-1. Basic recovery with known words:
-   ```bash
-   bip39_recovery --total-words 12 --fixed-words 8 --known-words "word1,word2,word3,word4,word5,word6,word7,word8,word9,word10,word11,word12" --address "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-   ```
+--total-words <NUM>
+Total number of words in the mnemonic
+Required
 
-2. Using files for input:
-   ```bash
-   bip39_recovery --total-words 12 --fixed-words 8 --seed-words-file words.txt --address-file address.txt
-   ```
 
-3. With GPU acceleration:
-   ```bash
-   bip39_recovery --gpu --total-words 12 --fixed-words 8 --known-words "word1,word2,word3,word4,word5,word6,word7,word8,word9,word10,word11,word12" --address "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-   ```
+--fixed-words <NUM>
+Number of fixed-position words (ignored for permutation)
+Required
 
-### File formats
 
-1. Seed words file (`words.txt`):
-   ```
-   word1
-   word2
-   word3
-   word4
-   ...
-   ```
+--known-words <WORDS>
+Comma-separated list of words
+None
 
-2. Address file (`address.txt`):
-   ```
-   1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
-   ```
 
-## Performance tips
+--seed-words-file <FILE>
+File with words (one per line)
+None
 
-1. Use the GPU version for significantly faster processing
-2. Adjust the batch size based on your system's memory
-3. The more fixed words you have, the faster the recovery process
-4. For large search spaces, consider using a more powerful machine or cloud computing
 
-## Troubleshooting
+--path <PATH>
+BIP-32 derivation path
+m/44'/0'/0'/0/0
 
-### Common issues
 
-1. **Command not found**: Make sure the binary is in your PATH or use the full path to the binary.
+--batch-size <NUM>
+Number of permutations per batch
+5000
 
-2. **Permission denied**: You may need to run the installation with sudo or adjust file permissions.
 
-3. **CUDA not found**: If you're trying to use GPU acceleration, make sure CUDA is installed and in your PATH.
+--gpu
+Enable GPU processing (requires cuda feature)
+false
 
-4. **Build failures**: Make sure you have the latest version of Rust and Cargo installed.
 
-### Verifying installation
+--network <NETWORK>
+Bitcoin network (mainnet or testnet)
+mainnet
 
-Run the verification script to check if everything is installed correctly:
 
-```bash
-./verify_installation.sh
-```
+--address-type <TYPE>
+Address type (p2pkh, p2wpkh, p2sh-p2wpkh)
+p2wpkh
 
-### Getting help
 
-For additional help, run:
+--debug
+Enable debug logging (invalid words, derived addresses)
+false
 
-```bash
-bip39_recovery --help
-```
 
-## License
+--log-file <FILE>
+Log file path
+recovery.log
 
-This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributing
+Notes:
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Use exactly one of --address, --address-file, or --address-db-file.
+--known-words and --seed-words-file are mutually exclusive.
+--fixed-words must not exceed --total-words.
+
+Input Files
+
+bip39_wordlist.txt: BIP-39 English wordlist (2048 words). Automatically downloaded by install.sh.
+words: List of mnemonic words to permute (one per line). Example:apple
+banana
+cat
+dog
+egg
+fox
+grape
+house
+ice
+joy
+king
+lemon
+
+
+addresses.txt (for --address-db-file): List of Bitcoin addresses (one per line). Example:1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
+3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy
+
+
+
+Example Commands
+
+Single Address:cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug
+
+
+Address Database:cargo run --release -- --address-db-file addresses.txt --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug
+
+
+Custom Log File:cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug --log-file custom.log
+
+
+
+Output
+
+Console: Displays progress bar, input parameters, debug messages (if --debug), and match results.
+Log File (recovery.log or specified): Records program start, arguments, errors, derived addresses (with --debug), and results.
+
+Success Example:
+Provided words (12): ["apple", "banana", "cat", "dog", "egg", "fox", "grape", "house", "ice", "joy", "king", "lemon"]
+Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+Derivation path: m/44'/0'/0'/0/0
+Network: mainnet
+Address type: p2pkh
+Total permutations to check: 479001600
+Using 8 threads for 479001600 permutations
+[00:00:02] [>---------------------------------------] 20000/479001600 (0%) | ETA: ~13h | Speed: 10000 hashes/sec
+Match found! Mnemonic: <mnemonic>, Address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+
+Log File Example (recovery.log):
+INFO 2025-08-18T13:19:00Z: Program started
+INFO 2025-08-18T13:19:00Z: Command-line arguments: Args { ... }
+INFO 2025-08-18T13:19:00Z: Using 8 threads for 479001600 permutations
+INFO 2025-08-18T13:19:00Z: Provided words (12): ["apple", "banana", ...]
+INFO 2025-08-18T13:19:00Z: Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+DEBUG 2025-08-18T13:19:01Z: Derived address for apple banana cat dog ...: 1...
+INFO 2025-08-18T13:19:02Z: Match found! Mnemonic: <mnemonic>, Address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+
+Troubleshooting
+If no match is found:
+
+Verify Words:
+
+Ensure words contains 12 valid BIP-39 words (check against bip39_wordlist.txt).
+Use iancoleman.io/bip39 to confirm the correct mnemonic generates the target address with:
+Derivation path: m/44'/0'/0'/0/0
+Address type: p2pkh
+Network: mainnet
+
+
+
+
+Check Log File:
+
+Review recovery.log for errors (e.g., ERROR: Invalid BIP-39 word) or derived addresses.
+Ensure a derived address matches the target or an address in addresses.txt.
+
+
+Test Derivation Path:
+
+Try alternative paths (e.g., m/49'/0'/0'/0/0):cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug --path m/49'/0'/0'/0/0
+
+
+
+
+Reduce Permutations:
+
+Test with fewer words (e.g., 6 words for 720 permutations):cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 6 --seed-words-file test_words --fixed-words 0 --debug
+
+
+
+
+Compilation Issues:
+
+If cargo build fails, run:cargo clean
+cargo update
+cargo build
+
+
+Check for dependency conflicts with cargo tree.
+
+
+
+Performance Notes
+
+Permutations: 12 words result in 12! = 479,001,600 permutations (~13 hours at 10,000 hashes/sec on 8 cores).
+Optimization:
+Increase --fixed-words (e.g., --fixed-words 10 for 2! = 2 permutations).
+Use fewer words (e.g., 6 words for 6! = 720 permutations).
+
+
+Parallel Processing: Utilizes all CPU cores via rayon.
+Logging: Minimal overhead, thread-safe with simplelog.
+
+License
+MIT License
