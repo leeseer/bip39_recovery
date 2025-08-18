@@ -1,0 +1,5 @@
+/home/user/bip39_recovery/bip39_recovery/target/release/build/secp256k1-sys-acc98b173b4e8416/build_script_build-acc98b173b4e8416.d: /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/secp256k1-sys-0.9.2/build.rs
+
+/home/user/bip39_recovery/bip39_recovery/target/release/build/secp256k1-sys-acc98b173b4e8416/build_script_build-acc98b173b4e8416: /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/secp256k1-sys-0.9.2/build.rs
+
+/home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/secp256k1-sys-0.9.2/build.rs:

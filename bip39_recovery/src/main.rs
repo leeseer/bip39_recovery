@@ -36,7 +36,7 @@ struct Args {
     seed_words_file: Option<String>,
     #[arg(long, default_value = "m/44'/0'/0'/0/0")]
     path: String,
-    #[arg(long, default_value = "5000")]
+    #[arg(long, default_value = "10000")]
     batch_size: usize,
     #[arg(long)]
     gpu: bool,
@@ -57,7 +57,7 @@ struct Bip39Wordlist {
 impl Bip39Wordlist {
     fn new(wordlist_path: &str) -> Result<Self> {
         let file = fs::File::open(wordlist_path)
-            .map_err(|e| anyhow::anyhow!("Failed to open wordlist file: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to open wordlist file {}: {}", wordlist_path, e))?;
         let reader = BufReader::new(file);
         let mut wordlist = PatriciaMap::new();
         for line in reader.lines() {
@@ -92,6 +92,9 @@ fn try_mnemonic(
     }
 
     let mnemonic_str = mnemonic_words.join(" ");
+    if debug {
+        debug!("Testing mnemonic: {}", mnemonic_str);
+    }
 
     let mnemonic = match Mnemonic::parse_in_normalized(Language::English, &mnemonic_str) {
         Ok(m) => m,
@@ -157,53 +160,56 @@ fn try_mnemonic(
     }
 }
 
-fn generate_permutations_batch(
+fn generate_permutations(
     words: &[String],
     fixed_words: usize,
-    batch_size: usize,
-    processed: usize,
     total: u64,
     debug: bool,
+    seen_mnemonics: &Arc<Mutex<HashSet<String>>>,
 ) -> Vec<Vec<String>> {
-    let max_batch_size = batch_size.min((total.saturating_sub(processed as u64)) as usize);
-    let mut result = Vec::with_capacity(max_batch_size);
+    let mut result = Vec::with_capacity(total as usize);
     let fixed = words[..fixed_words].to_vec();
     let mut permutable = words[fixed_words..].to_vec();
     let mut count = 0;
 
-    fn generate(k: usize, a: &mut [String], result: &mut Vec<Vec<String>>, batch_size: usize, count: &mut usize, fixed: &[String]) {
-        if *count >= batch_size {
+    fn generate(k: usize, a: &mut [String], result: &mut Vec<Vec<String>>, total: u64, count: &mut usize, fixed: &[String], seen_mnemonics: &Arc<Mutex<HashSet<String>>>) {
+        if *count >= total as usize {
             return;
         }
         if k == 1 {
             let mut full_permutation = fixed.to_vec();
             full_permutation.extend_from_slice(a);
+            let mnemonic_str = full_permutation.join(" ");
+            {
+                let mut seen = seen_mnemonics.lock().unwrap();
+                seen.insert(mnemonic_str.clone());
+            }
             result.push(full_permutation);
             *count += 1;
         } else {
-            generate(k - 1, a, result, batch_size, count, fixed);
+            generate(k - 1, a, result, total, count, fixed, seen_mnemonics);
             for i in 0..k - 1 {
                 if k % 2 == 0 {
                     a.swap(i, k - 1);
                 } else {
                     a.swap(0, k - 1);
                 }
-                generate(k - 1, a, result, batch_size, count, fixed);
-                if *count >= batch_size {
+                generate(k - 1, a, result, total, count, fixed, seen_mnemonics);
+                if *count >= total as usize {
                     break;
                 }
             }
         }
     }
 
-    if debug {
-        debug!("Generating batch of up to {} permutations, processed: {}, total: {}", max_batch_size, processed, total);
-    }
-    generate(permutable.len(), &mut permutable, &mut result, max_batch_size, &mut count, &fixed);
-    if debug && !result.is_empty() {
-        debug!("Generated {} permutations in batch", result.len());
-        debug!("First mnemonic in batch: {}", result[0].join(" "));
-        debug!("Last mnemonic in batch: {}", result[result.len() - 1].join(" "));
+    info!("Generating all {} permutations", total);
+    generate(permutable.len(), &mut permutable, &mut result, total, &mut count, &fixed, seen_mnemonics);
+    if !result.is_empty() {
+        info!("Generated {} permutations", result.len());
+        if debug {
+            debug!("First mnemonic: {}", result[0].join(" "));
+            debug!("Last mnemonic: {}", result[result.len() - 1].join(" "));
+        }
     }
     result
 }
@@ -270,13 +276,19 @@ fn main() -> Result<()> {
             simplelog::ColorChoice::Auto,
         ),
         WriteLogger::new(
-            LevelFilter::Debug,
+            LevelFilter::Info,
             Config::default(),
             File::create(&args.log_file)
-                .map_err(|e| anyhow::anyhow!("Failed to create log file {}: {}", args.log_file, e))?,
+                .map_err(|e| {
+                    error!("Failed to create log file {}: {}", args.log_file, e);
+                    anyhow::anyhow!("Failed to create log file {}: {}", args.log_file, e)
+                })?,
         ),
     ])
-    .map_err(|e| anyhow::anyhow!("Failed to initialize logger: {}", e))?;
+    .map_err(|e| {
+        error!("Failed to initialize logger: {}", e);
+        anyhow::anyhow!("Failed to initialize logger: {}", e)
+    })?;
 
     info!("Program started");
     info!("Command-line arguments: {:?}", args);
@@ -291,16 +303,17 @@ fn main() -> Result<()> {
     };
 
     let use_parallel = total_permutations >= 1000;
-    let num_threads = if use_parallel { num_cpus::get_physical() } else { 1 };
-    info!("Using {} threads for {} permutations", num_threads, total_permutations);
+    let num_threads = if use_parallel { 12 } else { 1 }; // Force 12 threads for 12-core CPU
+    info!("Requested {} threads for {} permutations", num_threads, total_permutations);
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build_global()
         .map_err(|e| {
-            error!("Failed to build global thread pool: {}", e);
+            error!("Failed to build global thread pool with {} threads: {}", num_threads, e);
             anyhow::anyhow!("Failed to build global thread pool: {}", e)
         })?;
+    info!("Thread pool initialized with {} threads (physical cores detected: {})", num_threads, num_cpus::get_physical());
 
     let (target_address, address_db) = match (&args.address, &args.address_file, &args.address_db_file) {
         (Some(addr), None, None) => (Some(addr.as_str()), None),
@@ -348,18 +361,27 @@ fn main() -> Result<()> {
                 anyhow::anyhow!("Failed to open seed words file: {}", e)
             })?;
         let reader = BufReader::new(file);
-        reader
+        let words = reader
             .lines()
             .collect::<Result<Vec<String>, io::Error>>()
             .map_err(|e| {
-                error!("Failed to read seed words file: {}", e);
+                error!("Failed to read seed words file {}: {}", seed_words_file, e);
                 anyhow::anyhow!("Failed to read seed words file: {}", e)
             })?
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .collect()
+            .collect::<Vec<String>>();
+        if words.len() != args.total_words {
+            error!("Seed words file contains {} words, expected {}", words.len(), args.total_words);
+            return Err(anyhow::anyhow!("Invalid number of seed words in file"));
+        }
+        words
     } else {
+        if args.known_words.len() != args.total_words {
+            error!("Provided {} known words, expected {}", args.known_words.len(), args.total_words);
+            return Err(anyhow::anyhow!("Invalid number of known words"));
+        }
         args.known_words
     };
 
@@ -409,22 +431,21 @@ fn main() -> Result<()> {
     info!("Fixed words count: {}", args.fixed_words);
     info!("Total permutations to check: {}", total_permutations);
 
-    let batch_size = if total_permutations < args.batch_size as u64 {
-        total_permutations as usize
-    } else {
-        args.batch_size
-    };
+    // Initialize seen mnemonics tracker
+    let seen_mnemonics = Arc::new(Mutex::new(HashSet::new()));
 
-    // Verify total permutations generated
-    if args.debug {
-        let total_generated: usize = (0..total_permutations)
-            .step_by(batch_size)
-            .map(|start| generate_permutations_batch(&known_words, args.fixed_words, batch_size, start as usize, total_permutations, args.debug).len())
-            .sum();
-        debug!("Total permutations generated: {}, expected: {}", total_generated, total_permutations);
-        if total_generated as u64 != total_permutations {
-            error!("Permutation generation mismatch: generated {}, expected {}", total_generated, total_permutations);
-        }
+    // Generate all permutations at once
+    let permutations = generate_permutations(
+        &known_words,
+        args.fixed_words,
+        total_permutations,
+        args.debug,
+        &seen_mnemonics,
+    );
+    let unique_mnemonics = seen_mnemonics.lock().unwrap().len();
+    info!("Total permutations generated: {}, unique: {}, expected: {}", permutations.len(), unique_mnemonics, total_permutations);
+    if permutations.len() as u64 != total_permutations || unique_mnemonics as u64 != total_permutations {
+        error!("Permutation generation mismatch: generated {}, unique {}, expected {}", permutations.len(), unique_mnemonics, total_permutations);
     }
 
     let found = Arc::new(AtomicBool::new(false));
@@ -454,177 +475,140 @@ fn main() -> Result<()> {
     let pb = Arc::new(Mutex::new(pb));
 
     if use_parallel {
-        while !found.load(Ordering::Relaxed) {
-            let current_processed = processed.load(Ordering::Relaxed);
-            if current_processed as u64 >= total_permutations {
-                if let Ok(pb) = pb.lock() {
-                    pb.finish_with_message("All permutations processed");
-                }
-                break;
-            }
-
-            let permutations = generate_permutations_batch(
-                &known_words,
-                args.fixed_words,
-                batch_size,
-                current_processed,
-                total_permutations,
-                args.debug,
-            );
-            if permutations.is_empty() {
-                if let Ok(pb) = pb.lock() {
-                    pb.finish_with_message("All permutations processed");
-                }
-                break;
-            }
-
-            let previous_speed_clone = previous_speed.clone();
-            permutations.par_iter().for_each_with(
-                (
-                    pb.clone(),
-                    found.clone(),
-                    processed.clone(),
-                    secp.clone(),
-                    bip39_wordlist.clone(),
-                    address_db.clone(),
-                    previous_speed_clone,
-                ),
-                |(pb, found, processed, secp, bip39_wordlist, address_db, previous_speed), mnemonic_words| {
-                    if found.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let mnemonic_option = if args.gpu {
-                        match try_mnemonic_gpu(
-                            mnemonic_words,
-                            network,
-                            &derivation_path,
-                            target_address,
-                            address_db.as_ref().as_ref(),
-                            &secp,
-                            &bip39_wordlist.read().unwrap(),
-                            &args.address_type,
-                            args.debug,
-                        ) {
-                            Ok(result) => result,
-                            Err(e) => {
-                                if args.debug {
-                                    error!("GPU mnemonic try failed: {}", e);
-                                }
-                                return;
-                            }
-                        }
-                    } else {
-                        match try_mnemonic(
-                            mnemonic_words,
-                            network,
-                            &derivation_path,
-                            target_address,
-                            address_db.as_ref().as_ref(),
-                            &secp,
-                            &bip39_wordlist.read().unwrap(),
-                            &args.address_type,
-                            args.debug,
-                        ) {
-                            Ok(result) => result,
-                            Err(e) => {
-                                if args.debug {
-                                    error!("Mnemonic try failed: {}", e);
-                                }
-                                return;
-                            }
-                        }
-                    };
-                    if let Some((mnemonic_str, matched_address)) = mnemonic_option {
-                        if let Ok(pb) = pb.lock() {
-                            pb.finish_with_message("Found match!");
-                        }
-                        info!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
-                        found.store(true, Ordering::Relaxed);
-                        process::exit(0);
-                    }
-                    let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Ok(pb) = pb.lock() {
-                        pb.set_position(count as u64);
-                        let elapsed = start.elapsed().as_secs_f64();
-                        let current_speed = if elapsed > 0.0 {
-                            count as f64 / elapsed
-                        } else {
-                            0.0
-                        };
-                        let mut previous_speed_lock = previous_speed.lock().unwrap();
-                        let speed = if *previous_speed_lock > 0.0 {
-                            0.9 * *previous_speed_lock + 0.1 * current_speed
-                        } else {
-                            current_speed
-                        };
-                        *previous_speed_lock = speed;
-                    }
-                },
-            );
-        }
-    } else {
-        let mut current_processed = 0;
-        while !found.load(Ordering::Relaxed) && current_processed < total_permutations as usize {
-            let permutations = generate_permutations_batch(
-                &known_words,
-                args.fixed_words,
-                batch_size,
-                current_processed,
-                total_permutations,
-                args.debug,
-            );
-            if permutations.is_empty() {
-                if let Ok(pb) = pb.lock() {
-                    pb.finish_with_message("All permutations processed");
-                }
-                break;
-            }
-
-            for mnemonic_words in permutations {
+        permutations.par_iter().for_each_with(
+            (
+                pb.clone(),
+                found.clone(),
+                processed.clone(),
+                secp.clone(),
+                bip39_wordlist.clone(),
+                address_db.clone(),
+                previous_speed.clone(),
+            ),
+            |(pb, found, processed, secp, bip39_wordlist, address_db, previous_speed), mnemonic_words| {
                 if found.load(Ordering::Relaxed) {
-                    break;
+                    return;
                 }
-                let mnemonic_option = match try_mnemonic(
-                    &mnemonic_words,
-                    network,
-                    &derivation_path,
-                    target_address,
-                    address_db.as_ref().as_ref(),
-                    &secp,
-                    &bip39_wordlist.read().unwrap(),
-                    &args.address_type,
-                    args.debug,
-                ) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        if args.debug {
-                            error!("Mnemonic try failed: {}", e);
+                let mnemonic_option = if args.gpu {
+                    match try_mnemonic_gpu(
+                        mnemonic_words,
+                        network,
+                        &derivation_path,
+                        target_address,
+                        address_db.as_ref().as_ref(),
+                        &secp,
+                        &bip39_wordlist.read().unwrap(),
+                        &args.address_type,
+                        args.debug,
+                    ) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            if args.debug {
+                                error!("GPU mnemonic try failed: {}", e);
+                            }
+                            return;
                         }
-                        continue;
+                    }
+                } else {
+                    match try_mnemonic(
+                        mnemonic_words,
+                        network,
+                        &derivation_path,
+                        target_address,
+                        address_db.as_ref().as_ref(),
+                        &secp,
+                        &bip39_wordlist.read().unwrap(),
+                        &args.address_type,
+                        args.debug,
+                    ) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            if args.debug {
+                                error!("Mnemonic try failed: {}", e);
+                            }
+                            return;
+                        }
                     }
                 };
                 if let Some((mnemonic_str, matched_address)) = mnemonic_option {
                     if let Ok(pb) = pb.lock() {
                         pb.finish_with_message("Found match!");
-                        info!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
                     }
+                    info!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
                     found.store(true, Ordering::Relaxed);
                     process::exit(0);
                 }
-                current_processed += 1;
+                let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Ok(pb) = pb.lock() {
-                    pb.set_position(current_processed as u64);
+                    pb.set_position(count as u64);
+                    let elapsed = start.elapsed().as_secs_f64();
+                    let current_speed = if elapsed > 0.0 {
+                        count as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+                    let mut previous_speed_lock = previous_speed.lock().unwrap();
+                    let speed = if *previous_speed_lock > 0.0 {
+                        0.9 * *previous_speed_lock + 0.1 * current_speed
+                    } else {
+                        current_speed
+                    };
+                    *previous_speed_lock = speed;
                 }
+            },
+        );
+        if let Ok(pb) = pb.lock() {
+            pb.finish_with_message("All permutations processed");
+        }
+    } else {
+        for mnemonic_words in permutations {
+            if found.load(Ordering::Relaxed) {
+                break;
             }
+            let mnemonic_option = match try_mnemonic(
+                &mnemonic_words,
+                network,
+                &derivation_path,
+                target_address,
+                address_db.as_ref().as_ref(),
+                &secp,
+                &bip39_wordlist.read().unwrap(),
+                &args.address_type,
+                args.debug,
+            ) {
+                Ok(result) => result,
+                Err(e) => {
+                    if args.debug {
+                        error!("Mnemonic try failed: {}", e);
+                    }
+                    continue;
+                }
+            };
+            if let Some((mnemonic_str, matched_address)) = mnemonic_option {
+                if let Ok(pb) = pb.lock() {
+                    pb.finish_with_message("Found match!");
+                    info!("Match found! Mnemonic: {}, Address: {}", mnemonic_str, matched_address);
+                }
+                found.store(true, Ordering::Relaxed);
+                process::exit(0);
+            }
+            let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Ok(pb) = pb.lock() {
+                pb.set_position(count as u64);
+            }
+        }
+        if let Ok(pb) = pb.lock() {
+            pb.finish_with_message("All permutations processed");
         }
     }
 
     let elapsed = start.elapsed().as_secs_f64();
     let processed_count = processed.load(Ordering::Relaxed);
+    let unique_mnemonics = seen_mnemonics.lock().unwrap().len();
 
     let final_message = format!(
-        "Done! Processed {} permutations in {:.2} seconds, Found: {}",
-        processed_count, elapsed, found.load(Ordering::Relaxed)
+        "Done! Processed {} permutations (unique: {}) in {:.2} seconds, Found: {}",
+        processed_count, unique_mnemonics, elapsed, found.load(Ordering::Relaxed)
     );
     info!("{}", final_message);
 
