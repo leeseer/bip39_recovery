@@ -16,7 +16,6 @@ use std::process;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-#[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(long, conflicts_with = "address_file")]
     address: Option<String>,
@@ -44,10 +43,19 @@ struct Args {
 
     #[arg(long)]
     gpu: bool,
+
+    #[arg(long, default_value = "mainnet")]
+    network: String,
+
+    #[arg(long, default_value = "p2wpkh")]
+    address_type: String,
+
+    #[arg(long)]
+    debug: bool,
 }
 
 struct Bip39Wordlist {
-   wordlist: PatriciaMap<()>,
+    wordlist: PatriciaMap<()>,
 }
 impl Bip39Wordlist {
     fn new(wordlist_path: &str) -> Result<Self> {
@@ -61,9 +69,9 @@ impl Bip39Wordlist {
         }
         Ok(Self { wordlist })
     }
-   fn contains(&self, word: &str) -> bool {
-       self.wordlist.contains_key(word)
-   }
+    fn contains(&self, word: &str) -> bool {
+        self.wordlist.contains_key(word)
+    }
 }
 
 fn try_mnemonic(
@@ -73,44 +81,78 @@ fn try_mnemonic(
     target_address: &str,
     secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
     bip39_wordlist: &Bip39Wordlist,
+    address_type: &str,
+    debug: bool,
 ) -> Option<String> {
-    // Early validation: Check if all words are valid BIP39 words
-    // This can quickly reject invalid combinations
     for word in mnemonic_words {
         if !bip39_wordlist.contains(word) {
+            if debug {
+                eprintln!("Invalid BIP-39 word: {}", word);
+            }
             return None;
         }
     }
 
-    // Convert words to a single string
     let mnemonic_str = mnemonic_words.join(" ");
 
     let mnemonic = match Mnemonic::parse_in_normalized(Language::English, &mnemonic_str) {
         Ok(m) => m,
-        Err(_) => return None,
+        Err(e) => {
+            if debug {
+                eprintln!("Invalid mnemonic: {} (Error: {})", mnemonic_str, e);
+            }
+            return None;
+        }
     };
 
     let seed = mnemonic.to_seed("");
     let xprv = match Xpriv::new_master(network, &seed) {
         Ok(k) => k,
-        Err(_) => return None,
+        Err(e) => {
+            if debug {
+                eprintln!("Failed to derive master key for {}: {}", mnemonic_str, e);
+            }
+            return None;
+        }
     };
 
     let mut child_xprv = xprv;
     for index in derivation_path.into_iter() {
         child_xprv = match child_xprv.derive_priv(secp, index) {
             Ok(c) => c,
-            Err(_) => return None,
+            Err(e) => {
+                if debug {
+                    eprintln!("Failed to derive child key for {} at {}: {}", mnemonic_str, index, e);
+                }
+                return None;
+            }
         };
     }
 
     let pubkey = bitcoin::PublicKey::new(child_xprv.private_key.public_key(secp));
-    let addr_p2wpkh = match Address::p2wpkh(&pubkey, network) {
+    let addr = match address_type.to_lowercase().as_str() {
+        "p2wpkh" => Address::p2wpkh(&pubkey, network),
+        "p2pkh" => Ok(Address::p2pkh(&pubkey, network)),
+        "p2sh-p2wpkh" => Address::p2shwpkh(&pubkey, network),
+        _ => {
+            eprintln!("Unsupported address type: {}", address_type);
+            return None;
+        }
+    };
+    let addr = match addr {
         Ok(addr) => addr,
-        Err(_) => return None,
+        Err(e) => {
+            if debug {
+                eprintln!("Failed to create address for {}: {}", mnemonic_str, e);
+            }
+            return None;
+        }
     };
 
-    let addr_str = addr_p2wpkh.to_string();
+    let addr_str = addr.to_string();
+    if debug {
+        println!("Derived address for {}: {}", mnemonic_str, addr_str);
+    }
     if addr_str == target_address {
         Some(mnemonic_str)
     } else {
@@ -118,8 +160,9 @@ fn try_mnemonic(
     }
 }
 
-fn generate_permutations_batch(fixed: &[String], scramble: &[String], batch_size: usize) -> Vec<Vec<String>> {
-    let mut result = Vec::with_capacity(batch_size);
+fn generate_permutations_batch(fixed: &[String], scramble: &[String], batch_size: usize, processed: usize, total: u64) -> Vec<Vec<String>> {
+    let max_batch_size = batch_size.min((total.saturating_sub(processed as u64)) as usize);
+    let mut result = Vec::with_capacity(max_batch_size);
     let mut current = scramble.to_vec();
     let mut count = 0;
 
@@ -128,7 +171,6 @@ fn generate_permutations_batch(fixed: &[String], scramble: &[String], batch_size
             return;
         }
         if k == 1 {
-            // Pre-allocate the vector with the correct size
             let mut full = Vec::with_capacity(fixed.len() + a.len());
             full.extend_from_slice(fixed);
             full.extend_from_slice(a);
@@ -150,7 +192,7 @@ fn generate_permutations_batch(fixed: &[String], scramble: &[String], batch_size
         }
     }
 
-    generate(scramble.len(), &mut current, &mut result, fixed, batch_size, &mut count);
+    generate(scramble.len(), &mut current, &mut result, fixed, max_batch_size, &mut count);
     result
 }
 
@@ -162,17 +204,10 @@ fn try_mnemonic_gpu(
     target_address: &str,
     secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
     bip39_wordlist: &Bip39Wordlist,
+    address_type: &str,
+    debug: bool,
 ) -> Option<String> {
-    // This is a placeholder for GPU implementation
-    // In a full implementation, this would:
-    // 1. Convert mnemonic words to indices
-    // 2. Transfer data to GPU
-    // 3. Execute CUDA kernel to verify mnemonic
-    // 4. Transfer results back from GPU
-    // 5. Return verification result
-    
-    // For now, we'll fall back to CPU verification
-    try_mnemonic(mnemonic_words, network, derivation_path, target_address, secp, bip39_wordlist)
+    try_mnemonic(mnemonic_words, network, derivation_path, target_address, secp, bip39_wordlist, address_type, debug)
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -183,21 +218,33 @@ fn try_mnemonic_gpu(
     target_address: &str,
     secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
     bip39_wordlist: &Bip39Wordlist,
+    address_type: &str,
+    debug: bool,
 ) -> Option<String> {
-    // Fallback to CPU verification when CUDA is not available
-    try_mnemonic(mnemonic_words, network, derivation_path, target_address, secp, bip39_wordlist)
+    try_mnemonic(mnemonic_words, network, derivation_path, target_address, secp, bip39_wordlist, address_type, debug)
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Set the number of threads for Rayon
+    let total_permutations = {
+        let n = args.total_words - args.fixed_words;
+        let mut result: u64 = 1;
+        for i in 1..=n {
+            result = result.saturating_mul(i as u64);
+        }
+        result
+    };
+
+    let use_parallel = total_permutations >= 1000;
+    let num_threads = if use_parallel { num_cpus::get_physical() } else { 1 };
+    println!("Using {} threads for {} permutations", num_threads, total_permutations);
+
     rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get())
+        .num_threads(num_threads)
         .build_global()
         .map_err(|e| anyhow::anyhow!("Failed to build global thread pool: {}", e))?;
 
-    // Read target address from file or command line
     let target_address = if let Some(address_file) = &args.address_file {
         fs::read_to_string(address_file)
             .map_err(|e| anyhow::anyhow!("Failed to read address file: {}", e))?
@@ -209,7 +256,6 @@ fn main() -> Result<()> {
         return Err(anyhow::anyhow!("Either --address or --address-file must be specified"));
     };
 
-    // Read seed words from file or command line
     let known_words = if let Some(seed_words_file) = &args.seed_words_file {
         let file = fs::File::open(seed_words_file)
             .map_err(|e| anyhow::anyhow!("Failed to open seed words file: {}", e))?;
@@ -225,7 +271,15 @@ fn main() -> Result<()> {
         args.known_words
     };
 
-    let network = Network::Bitcoin;
+    let network = match args.network.to_lowercase().as_str() {
+        "mainnet" => Network::Bitcoin,
+        "testnet" => Network::Testnet,
+        _ => {
+            eprintln!("Invalid network: {}. Use 'mainnet' or 'testnet'.", args.network);
+            return Err(anyhow::anyhow!("Invalid network"));
+        }
+    };
+
     let derivation_path = args.path.parse::<DerivationPath>().map_err(|e| {
         eprintln!("Invalid derivation path: {}", e);
         anyhow::anyhow!("Invalid derivation path: {}", e)
@@ -247,16 +301,20 @@ fn main() -> Result<()> {
 
     let fixed_words = &known_words[..args.fixed_words];
     let scramble_words = &known_words[args.fixed_words..];
+    println!("Fixed words ({}): {:?}", fixed_words.len(), fixed_words);
+    println!("Scramble words ({}): {:?}", scramble_words.len(), scramble_words);
+    println!("Target address: {}", target_address);
+    println!("Derivation path: {}", args.path);
+    println!("Network: {}", args.network);
+    println!("Address type: {}", args.address_type);
+
     let found = Arc::new(AtomicBool::new(false));
     let processed = Arc::new(AtomicUsize::new(0));
     let start = Instant::now();
     let previous_speed: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
-    
-    // Create a shared secp context for all threads
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    let secp = Arc::new(secp);
 
-    // Load the BIP39 wordlist
+    let secp = Arc::new(bitcoin::secp256k1::Secp256k1::new());
+
     let bip39_wordlist = match Bip39Wordlist::new("bip39_wordlist.txt") {
         Ok(wordlist) => Arc::new(RwLock::new(wordlist)),
         Err(e) => {
@@ -264,139 +322,156 @@ fn main() -> Result<()> {
             return Err(e);
         }
     };
-    
-    // Calculate total permutations (factorial of scramble_words length)
-    // We need to be careful with large numbers, so we'll use u64 and check for overflow
-    let total_permutations = {
-        let n = scramble_words.len();
-        let mut result: u64 = 1;
-        for i in 1..=n {
-            result = result.saturating_mul(i as u64);
-        }
-        result
-    };
-    
+
     println!("Total permutations to check: {}", total_permutations);
 
-    // Create a progress bar that shows overall progress
-    let pb = ProgressBar::new_spinner();
+    let batch_size = if total_permutations < args.batch_size as u64 {
+        total_permutations as usize
+    } else {
+        args.batch_size
+    };
+
+    let pb = ProgressBar::new(total_permutations);
     pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("[{elapsed_precise}] {spinner:.green} Processed: {pos} | Remaining: {msg} | Speed: {per_sec} hashes/sec")
-            .unwrap()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({percent}%) | ETA: {eta} | Speed: {per_sec} hashes/sec"
+        )
+        .unwrap()
+        .progress_chars("##-")
     );
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     let pb = Arc::new(Mutex::new(pb));
-    
-    // Set initial message for remaining permutations
-    if let Ok(pb) = pb.lock() {
-        pb.set_message(format!("{}", total_permutations));
-    }
 
-    while !found.load(Ordering::Relaxed) {
-        let permutations = generate_permutations_batch(fixed_words, scramble_words, args.batch_size);
-        if permutations.is_empty() {
-            break;
-        }
-
-        let previous_speed_clone = previous_speed.clone();
-        permutations.par_iter().for_each_with(
-            (pb.clone(), found.clone(), processed.clone(), secp.clone(), bip39_wordlist.clone(), previous_speed_clone),
-            |(pb, found, processed, secp, bip39_wordlist, previous_speed), mnemonic_words| {
-                if found.load(Ordering::Relaxed) {
-                    return;
+    if use_parallel {
+        while !found.load(Ordering::Relaxed) {
+            let current_processed = processed.load(Ordering::Relaxed);
+            if current_processed as u64 >= total_permutations {
+                if let Ok(pb) = pb.lock() {
+                    pb.finish_with_message("All permutations processed");
                 }
-                let mnemonic_option = if args.gpu {
-                    try_mnemonic_gpu(mnemonic_words, network, &derivation_path, &target_address, &secp, &bip39_wordlist.read().unwrap())
-                } else {
-                    let bip39_wordlist_lock = bip39_wordlist.read().unwrap();
-                    try_mnemonic(mnemonic_words, network, &derivation_path, &target_address, &secp, &bip39_wordlist_lock)
-                };
+                break;
+            }
+
+            let permutations = generate_permutations_batch(
+                fixed_words,
+                scramble_words,
+                batch_size,
+                current_processed,
+                total_permutations,
+            );
+            if permutations.is_empty() {
+                if let Ok(pb) = pb.lock() {
+                    pb.finish_with_message("All permutations processed");
+                }
+                break;
+            }
+
+            let previous_speed_clone = previous_speed.clone();
+            permutations.par_iter().for_each_with(
+                (pb.clone(), found.clone(), processed.clone(), secp.clone(), bip39_wordlist.clone(), previous_speed_clone),
+                |(pb, found, processed, secp, bip39_wordlist, previous_speed), mnemonic_words| {
+                    if found.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mnemonic_option = if args.gpu {
+                        try_mnemonic_gpu(mnemonic_words, network, &derivation_path, &target_address, &secp, &bip39_wordlist.read().unwrap(), &args.address_type, args.debug)
+                    } else {
+                        let bip39_wordlist_lock = bip39_wordlist.read().unwrap();
+                        try_mnemonic(mnemonic_words, network, &derivation_path, &target_address, &secp, &bip39_wordlist_lock, &args.address_type, args.debug)
+                    };
+                    if let Some(mnemonic_str) = mnemonic_option {
+                        if let Ok(pb) = pb.lock() {
+                            pb.finish_with_message("Found match!");
+                        }
+                        println!("Match found! Mnemonic: {}", mnemonic_str);
+                        found.store(true, Ordering::Relaxed);
+                        process::exit(0);
+                    }
+                    let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Ok(pb) = pb.lock() {
+                        pb.set_position(count as u64);
+                        let _remaining = total_permutations.saturating_sub(count as u64);
+                        let elapsed = start.elapsed().as_secs_f64();
+                        let current_speed = if elapsed > 0.0 {
+                            count as f64 / elapsed
+                        } else {
+                            0.0
+                        };
+                        let mut previous_speed_lock = previous_speed.lock().unwrap();
+                        let speed = if *previous_speed_lock > 0.0 {
+                            0.9 * *previous_speed_lock + 0.1 * current_speed
+                        } else {
+                            current_speed
+                        };
+                        *previous_speed_lock = speed;
+                    }
+                },
+            );
+        }
+    } else {
+        let mut current_processed = 0;
+        while !found.load(Ordering::Relaxed) && current_processed < total_permutations as usize {
+            let permutations = generate_permutations_batch(
+                fixed_words,
+                scramble_words,
+                batch_size,
+                current_processed,
+                total_permutations,
+            );
+            if permutations.is_empty() {
+                if let Ok(pb) = pb.lock() {
+                    pb.finish_with_message("All permutations processed");
+                }
+                break;
+            }
+
+            for mnemonic_words in permutations {
+                if found.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mnemonic_option = try_mnemonic(
+                    &mnemonic_words,
+                    network,
+                    &derivation_path,
+                    &target_address,
+                    &secp,
+                    &bip39_wordlist.read().unwrap(),
+                    &args.address_type,
+                    args.debug,
+                );
                 if let Some(mnemonic_str) = mnemonic_option {
                     if let Ok(pb) = pb.lock() {
                         pb.finish_with_message("Found match!");
+                        println!("Match found! Mnemonic: {}", mnemonic_str);
                     }
-                    println!("Match found! Mnemonic: {}", mnemonic_str);
                     found.store(true, Ordering::Relaxed);
                     process::exit(0);
                 }
-                let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                current_processed += 1;
                 if let Ok(pb) = pb.lock() {
-                    pb.set_position(count as u64);
-                    
-                    // Update message with remaining permutations and ETA
-                    let remaining = total_permutations.saturating_sub(count as u64);
-                    let elapsed = start.elapsed().as_secs_f64();
-                    let current_speed = if elapsed > 0.0 {
-                        count as f64 / elapsed
-                    } else {
-                        0.0
-                    };
-                    let mut previous_speed_lock = previous_speed.lock().unwrap();
-                    let speed = if *previous_speed_lock > 0.0 {
-                        0.9 * *previous_speed_lock + 0.1 * current_speed
-                    } else {
-                        current_speed
-                    };
-                    *previous_speed_lock = speed;
-
-                    let eta_seconds = if speed > 0.0 {
-                        (remaining as f64 / speed) as u64
-                    } else {
-                        0
-                    };
-                    
-                    // Format ETA as HH:MM:SS
-                    let eta_formatted = if eta_seconds > 0 {
-                        let hours = eta_seconds / 3600;
-                        let minutes = (eta_seconds % 3600) / 60;
-                        let seconds = eta_seconds % 60;
-                        format!("{}:{:02}:{:02}", hours, minutes, seconds)
-                    } else {
-                        "N/A".to_string()
-                    };
-                    
-                    pb.set_message(format!("{} | ETA: {}", remaining, eta_formatted));
+                    pb.set_position(current_processed as u64);
                 }
-            },
-        );
+            }
+        }
     }
 
     let elapsed = start.elapsed().as_secs_f64();
     let processed_count = processed.load(Ordering::Relaxed);
-    
-    // Calculate remaining permutations and estimated time left
-    let remaining = total_permutations.saturating_sub(processed_count as u64);
-    let speed = if elapsed > 0.0 {
-        processed_count as f64 / elapsed
-    } else {
-        0.0
-    };
-    let eta_seconds = if speed > 0.0 {
-        (remaining as f64 / speed) as u64
-    } else {
-        0
-    };
-    
+
     let final_message = format!(
         "Done! Processed {} permutations in {:.2} seconds, Found: {}",
         processed_count, elapsed, found.load(Ordering::Relaxed)
     );
     println!("{}", final_message);
-    
+
     if !found.load(Ordering::Relaxed) {
         println!("No matching mnemonic found.");
-        println!("Remaining permutations: {}", remaining);
-        if eta_seconds > 0 {
-            println!("Estimated time left: {} seconds", eta_seconds);
-        }
     } else {
         println!("Search completed successfully.");
     }
-    
+
     if elapsed > 0.0 {
-        println!("Speed: {:.2} hashes/sec", speed);
+        println!("Speed: {:.2} hashes/sec", processed_count as f64 / elapsed);
     }
 
     Ok(())
