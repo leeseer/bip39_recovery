@@ -1,16 +1,8 @@
-10:58:08 [INFO] Program started
-10:58:08 [INFO] Command-line arguments: Args { address: Some("1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC"), address_file: None, address_db_file: None, total_words: 12, fixed_words: 0, known_words: [], seed_words_file: Some("words"), path: "m/44'/0'/0'/0/0", chunk_size: 5000000, gpu: true, network: "mainnet", address_type: "p2pkh", debug: false, log_file: "recovery.log" }
-10:58:08 [INFO] Requested 12 threads for 479001600 permutations
-10:58:08 [INFO] System threads available: 12
-10:58:08 [INFO] Thread pool initialized with 12 threads (physical cores detected: 6)
-10:58:08 [INFO] Provided words (12): ["harvest", "bulk", "pave", "before", "enrich", "one", "dish", "busy", "mean", "biology", "correct", "chat"]
-10:58:08 [INFO] Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
-10:58:08 [INFO] Derivation path: m/44'/0'/0'/0/0
-10:58:08 [INFO] Network: mainnet
-10:58:08 [INFO] Address type: p2pkh
-10:58:08 [INFO] Chunk size: 5000000
-10:58:08 [INFO] Total permutations to check: 479001600
-10:58:08 [INFO] Running in GPU mode
-10:58:08 [INFO] Generating permutations, total expected: 479001600
-10:58:08 [INFO] Processing combination (positions 1-12): ["harvest", "bulk", "pave", "before", "enrich", "one", "dish", "busy", "mean", "biology", "correct", "chat"]
-10:58:12 [INFO] Processing 5000000 permutations for combination (positions 1-12): ["harvest", "bulk", "pave", "before", "enrich", "one", "dish", "busy", "mean", "biology", "correct", "chat"]
+18:31:24 [INFO] Program started
+18:31:24 [INFO] Command-line arguments: Args { address: Some("1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC"), address_file: None, address_db_file: None, total_words: 12, fixed_words: 2, known_words: [], seed_words_file: Some("words"), path: "m/44'/0'/0'/0/0", batch_size: 10000, gpu: true, network: "mainnet", address_type: "p2pkh", debug: false, log_file: "recovery.log", permutations_file: "permutations.txt", progress_file: "progress.txt" }
+18:31:24 [INFO] Requested 12 threads for 3628800 permutations
+18:31:24 [INFO] Thread pool initialized with 12 threads (physical cores detected: 6)
+18:31:24 [INFO] Generating all 3628800 permutations to permutations.txt
+18:31:43 [INFO] Generated 3628800 permutations to permutations.txt
+18:31:43 [INFO] Total permutations generated: 3628800, unique: 3628800, expected: 3628800
+18:31:43 [INFO] Loaded progress: 2390483 permutations processed
