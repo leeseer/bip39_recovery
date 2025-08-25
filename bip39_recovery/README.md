@@ -1,263 +1,105 @@
-BIP-39 Mnemonic Recovery Tool
-This Rust program recovers a BIP-39 mnemonic by permuting a list of words and checking derived Bitcoin addresses against a target address or a database of addresses. It supports parallel processing, logging, and multiple address types (P2PKH, P2WPKH, P2SH-P2WPKH).
+Bitcoin Mnemonic Recovery Tool
+This is a Rust-based tool for recovering Bitcoin wallet addresses by generating and testing BIP-39 mnemonic phrases against a target address or a database of addresses. It supports parallel processing with Rayon, progress tracking with a progress bar, and logging for debugging and progress persistence.
 Features
 
-Permutes all provided words (e.g., 12! = 479,001,600 permutations for 12 words).
-Checks mnemonics against a single address (--address or --address-file) or an address database (--address-db-file).
-Logs all processes to a file (default: recovery.log).
-Suppresses "Invalid mnemonic" errors while logging invalid BIP-39 words and derivation errors (with --debug).
-Uses rayon for parallel processing across all CPU cores.
-Displays a progress bar with ETA and speed.
-Terminates immediately upon finding a match.
-Supports mainnet/testnet and customizable derivation paths.
+Generates BIP-39 mnemonic phrases with fixed and permutable words.
+Supports Bitcoin address types: P2WPKH, P2PKH, and P2SH-P2WPKH.
+Checks against a single target address, an address file, or a database of addresses.
+Configurable derivation paths and network (mainnet/testnet).
+Parallel processing for large permutation sets.
+Progress tracking with a progress bar and persistent progress saving.
+Logging to a file for debugging and monitoring.
+Handles Ctrl+C gracefully, saving progress before exiting.
 
 Prerequisites
 
-Rust and Cargo: Install via rustup:curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+Rust: Stable toolchain (install via rustup).
+System Dependencies:
+libssl-dev and pkg-config (for cryptographic operations).
+curl (for downloading the BIP-39 wordlist).
 
 
-Linux/macOS: The installer script is designed for Unix-like systems. Windows users can use WSL or follow manual steps.
+BIP-39 Wordlist: The tool requires bip39_wordlist.txt (English wordlist from BIP-39).
 
 Installation
 
-Run the Installer:
-chmod +x install.sh
-./install.sh
-
-The installer:
-
-Checks for Rust and cargo.
-Creates or updates the project directory (bip39_recovery).
-Sets up Cargo.toml with dependencies.
-Downloads the BIP-39 wordlist (bip39_wordlist.txt).
-Creates sample words and addresses.txt files.
-Builds the project with cargo build --release.
+Clone the repository:
+git clone https://github.com/yourusername/your-repo-name.git
+cd your-repo-name
 
 
-Manual Setup (if preferred):
+Run the provided installer script to set up dependencies and build the project:
+chmod +x installer.sh
+./installer.sh
 
-Clone or create the project:mkdir bip39_recovery
-cd bip39_recovery
-cargo init --bin
+The script will:
 
-
-Copy main.rs and Cargo.toml from the provided sources.
-Download the BIP-39 wordlist:curl -o bip39_wordlist.txt https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt
-
-
-Create a words file with 12 BIP-39 words (one per line).
-Install dependencies:cargo update
-cargo build --release
-
-
+Install system dependencies (build-essential, libssl-dev, pkg-config, curl).
+Install Rust if not already installed.
+Download the BIP-39 wordlist (bip39_wordlist.txt).
+Build the project with cargo build --release.
 
 
 
 Usage
-Run the program with cargo run --release -- [options]. Example:
-cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug
+Run the tool using cargo run --release -- [options]. Below are the available command-line arguments:
+cargo run --release -- --help
 
-Command-Line Arguments
+Command-Line Options
 
+--address <ADDRESS>: Single Bitcoin address to match against.
+--address-file <FILE>: File containing a single Bitcoin address.
+--address-db-file <FILE>: File containing a list of Bitcoin addresses (one per line).
+--total-words <NUMBER>: Total number of words in the mnemonic (e.g., 12, 24).
+--fixed-words <NUMBER>: Number of fixed words in the mnemonic (prefix).
+--known-words <WORDS>: Comma-separated list of known words (must match total-words).
+--seed-words-file <FILE>: File containing known words (one per line).
+--path <PATH>: BIP-32 derivation path (default: m/44'/0'/0'/0/0).
+--batch-size <NUMBER>: Save progress every N permutations (default: 10000).
+--gpu: Enable GPU acceleration (not implemented in this version).
+--network <NETWORK>: Bitcoin network (mainnet or testnet, default: mainnet).
+--address-type <TYPE>: Address type (p2wpkh, p2pkh, or p2sh-p2wpkh, default: p2wpkh).
+--debug: Enable debug logging.
+--log-file <FILE>: Log file path (default: recovery.log).
+--progress-file <FILE>: Progress file path (default: progress.txt).
 
-
-Argument
-Description
-Default
-
-
-
---address <ADDRESS>
-Single target Bitcoin address
-None
-
-
---address-file <FILE>
-File containing a single address
-None
-
-
---address-db-file <FILE>
-File with multiple addresses (one per line)
-None
-
-
---total-words <NUM>
-Total number of words in the mnemonic
-Required
-
-
---fixed-words <NUM>
-Number of fixed-position words (ignored for permutation)
-Required
-
-
---known-words <WORDS>
-Comma-separated list of words
-None
-
-
---seed-words-file <FILE>
-File with words (one per line)
-None
-
-
---path <PATH>
-BIP-32 derivation path
-m/44'/0'/0'/0/0
-
-
---batch-size <NUM>
-Number of permutations per batch
-5000
-
-
---gpu
-Enable GPU processing (requires cuda feature)
-false
-
-
---network <NETWORK>
-Bitcoin network (mainnet or testnet)
-mainnet
-
-
---address-type <TYPE>
-Address type (p2pkh, p2wpkh, p2sh-p2wpkh)
-p2wpkh
-
-
---debug
-Enable debug logging (invalid words, derived addresses)
-false
-
-
---log-file <FILE>
-Log file path
-recovery.log
-
-
-Notes:
-
-Use exactly one of --address, --address-file, or --address-db-file.
---known-words and --seed-words-file are mutually exclusive.
---fixed-words must not exceed --total-words.
-
-Input Files
-
-bip39_wordlist.txt: BIP-39 English wordlist (2048 words). Automatically downloaded by install.sh.
-words: List of mnemonic words to permute (one per line). Example:apple
-banana
-cat
-dog
-egg
-fox
-grape
-house
-ice
-joy
-king
-lemon
-
-
-addresses.txt (for --address-db-file): List of Bitcoin addresses (one per line). Example:1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
-1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa
-3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy
-
-
-
-Example Commands
-
-Single Address:cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug
-
-
-Address Database:cargo run --release -- --address-db-file addresses.txt --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug
-
-
-Custom Log File:cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug --log-file custom.log
-
-
+Example
+To test a 12-word mnemonic with 6 fixed words and a target address:
+cargo run --release -- --address 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa --total-words 12 --fixed-words 6 --known-weekend,abandon,ability,able,about,above,absent,absorb,abstract,absurd,abuse,access --network mainnet --address-type p2wpkh
 
 Output
 
-Console: Displays progress bar, input parameters, debug messages (if --debug), and match results.
-Log File (recovery.log or specified): Records program start, arguments, errors, derived addresses (with --debug), and results.
+Progress is displayed with a progress bar, showing the number of permutations processed, speed, and ETA.
+Logs are written to the specified log file (recovery.log by default).
+Progress is saved to the specified progress file (progress.txt by default) every batch-size permutations.
+If a match is found, the mnemonic and matching address are printed, and the program exits.
+On interruption (Ctrl+C), progress is saved before exiting.
 
-Success Example:
-Provided words (12): ["apple", "banana", "cat", "dog", "egg", "fox", "grape", "house", "ice", "joy", "king", "lemon"]
-Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
-Derivation path: m/44'/0'/0'/0/0
-Network: mainnet
-Address type: p2pkh
-Total permutations to check: 479001600
-Using 8 threads for 479001600 permutations
-[00:00:02] [>---------------------------------------] 20000/479001600 (0%) | ETA: ~13h | Speed: 10000 hashes/sec
-Match found! Mnemonic: <mnemonic>, Address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+Dependencies
+The project uses the following Rust crates (managed by Cargo):
 
-Log File Example (recovery.log):
-INFO 2025-08-18T13:19:00Z: Program started
-INFO 2025-08-18T13:19:00Z: Command-line arguments: Args { ... }
-INFO 2025-08-18T13:19:00Z: Using 8 threads for 479001600 permutations
-INFO 2025-08-18T13:19:00Z: Provided words (12): ["apple", "banana", ...]
-INFO 2025-08-18T13:19:00Z: Target address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
-DEBUG 2025-08-18T13:19:01Z: Derived address for apple banana cat dog ...: 1...
-INFO 2025-08-18T13:19:02Z: Match found! Mnemonic: <mnemonic>, Address: 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC
+bitcoin: For Bitcoin address generation and BIP-32 derivation.
+bip39: For mnemonic phrase validation and seed generation.
+clap: For command-line argument parsing.
+anyhow: For error handling.
+rayon: For parallel processing.
+patricia_tree: For efficient wordlist lookups.
+indicatif: For progress bar display.
+simplelog: For logging to file.
+itertools: For generating permutations.
+ctrlc: For handling Ctrl+C signals.
+secp256k1: For cryptographic operations.
 
-Troubleshooting
-If no match is found:
+Notes
 
-Verify Words:
+The BIP-39 wordlist (bip39_wordlist.txt) must be in the project root directory. The installer script downloads it automatically.
+The tool supports large permutation sets by using parallel processing (rayon) when the number of permutations exceeds 1000.
+Progress is saved periodically to resume from the last checkpoint if interrupted.
+Debug mode (--debug) provides detailed logging for troubleshooting.
 
-Ensure words contains 12 valid BIP-39 words (check against bip39_wordlist.txt).
-Use iancoleman.io/bip39 to confirm the correct mnemonic generates the target address with:
-Derivation path: m/44'/0'/0'/0/0
-Address type: p2pkh
-Network: mainnet
-
-
-
-
-Check Log File:
-
-Review recovery.log for errors (e.g., ERROR: Invalid BIP-39 word) or derived addresses.
-Ensure a derived address matches the target or an address in addresses.txt.
-
-
-Test Derivation Path:
-
-Try alternative paths (e.g., m/49'/0'/0'/0/0):cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 12 --seed-words-file words --fixed-words 4 --debug --path m/49'/0'/0'/0/0
-
-
-
-
-Reduce Permutations:
-
-Test with fewer words (e.g., 6 words for 720 permutations):cargo run --release -- --address 1E7LSo4WS8sY75tdZLvohZJTqm3oYGWXvC --address-type p2pkh --total-words 6 --seed-words-file test_words --fixed-words 0 --debug
-
-
-
-
-Compilation Issues:
-
-If cargo build fails, run:cargo clean
-cargo update
-cargo build
-
-
-Check for dependency conflicts with cargo tree.
-
-
-
-Performance Notes
-
-Permutations: 12 words result in 12! = 479,001,600 permutations (~13 hours at 10,000 hashes/sec on 8 cores).
-Optimization:
-Increase --fixed-words (e.g., --fixed-words 10 for 2! = 2 permutations).
-Use fewer words (e.g., 6 words for 6! = 720 permutations).
-
-
-Parallel Processing: Utilizes all CPU cores via rayon.
-Logging: Minimal overhead, thread-safe with simplelog.
-
+Contributing
+Contributions are welcome! Please submit a pull request or open an issue on GitHub.
 License
-MIT License
+This project is licensed under the MIT License. See the LICENSE file for details.
+Disclaimer
+This tool is for educational and recovery purposes only. Use it responsibly and ensure you have legal permission to recover any wallet addresses. The authors are not responsible for any misuse or loss resulting from the use of this tool.
